@@ -1,14 +1,13 @@
-def sc = new org.slib.sonarqube()
-def git = new org.slib.git()
-def slack = new org.slib.slack()
-def jira = new org.slib.jiraUpdate()
+// Import Shared Library
+@Library('my-shared-library') _ // Imports entire library, alt specify tag or branch @Library('my-shared-library@1.0') _
 
-def gitCredsId = '' // GitHub Credentials Id
-def sonarName = 'SonarQube Beta Server' // Server registered in Jenkins
-def jiraName = 'DevOps JIRA'    // Server registered in Jenkins
+def sc = new org.slib.sonarqube()
+
+def globalVar = '' // Enables var to be used throughout pipeline
+
 
 pipeline {
-    agent any
+    agent { label 'linux' } // or agent any
     parameters {
         string(name: 'slackChannel', defaultValue: 'devops', description: 'Slack channel to report Jenkins notifications')
         string(name: 'jiraProject', defaultValue: 'SAN', description: 'Key for the Jira Project to update')
@@ -20,78 +19,77 @@ pipeline {
     environment {
         JIRA_SITE="${jiraName}" // This var is automatically used by the jira-steps plugin
     }
+    options {
+        timestamps() // plugin: https://plugins.jenkins.io/timestamper/
+    }
     stages {
-        stage('GIT: Checkout Source') {
+        stage('Initial Tasks') {
             steps {
                  script {
-                    failedStage=env.STAGE_NAME
-                    gitRepo = git.checkOut(params.giturl, gitCredsId, 'master')
-                    gitTag = git.getTags()  // Retrieve commit tag
-                    gitAuthorEmail = git.getDetails() // Retrieve author details from commit
-                    echo "Branch: ${env.BRANCH_NAME}"
+                    checkoutSCM // Uses repo from job configuration
                     startedBy = whoStartedJob() // Record what/who triggered pipeline (by user, git trigger, schedule etc)
                     echo "Pipeline triggered by: ${startedBy}"
                 }
             }
         }
-        stage('SonarQube: Trigger Scan') {
+        stage('Blocking Step') {
+            when {
+                expression {
+                    input message: 'Tag on Docker Hub?'
+                    // if input is Aborted, the whole build will fail, otherwise
+                    // we must return true to continue
+                    return true
+                }
+                beforeAgent true
+            }
             steps {
-                withSonarQubeEnv(sonarName) { // await sonarqube response (requires SC to be configured with Jenkins generic hook)
-                    script {
-                        failedStage=env.STAGE_NAME
-                        sc.RunSonarQube(
-                            params.scProjectKey,
-                            params.scProjectName,
-                            params.scFolderExclusions,
-                            env.WORKSPACE,
-                            env.BUILD_NUMBER,
-                            "staging")
-                    }
+                
+            }
+        }
+        stage('Set Env Vars') {
+            steps {
+                script {
+                    env.IS_NEW_VERSION = "YES"
                 }
             }
         }
-        stage('SonarQube: Evaluate Quality Gate') {
-            agent none
-            options { 
-                timestamps()
-                timeout(time: 1, unit: 'HOURS') }
+        stage('More Conditionals') {
+            when {
+                branch "master"
+                environment name: "IS_NEW_VERSION", value: "YES"
+            }
+            
+        }
+        stage("A stage to be skipped") {
+            when {
+                expression { false }  //skip this stage
+            }
             steps {
-                script {
-                    failedStage=env.STAGE_NAME
-                    waitForQualityGate abortPipeline: true  // Wait for scan result and abort pipeline on failure
-                }
+                echo 'This step will never be run'
             }
         }
     }
     post {
         always {
-            cleanWs()   // Clean up Jenkins workspace
+            cleanWs()   // Clean up Jenkins workspace - this is a plugin
         }
         fixed {
             echo "Pipeline is now successful after previous failure"
-            script {
-                jira.NewComment(currentBuild.previousBuild.buildVariables.jiraIssue, "Build Successfully completeted, see [${BUILD_ID}|${env.BUILD_URL}]")
-                slackSend color: "#00ff00", channel: slackChannel, message: "Closing Issue: ${currentBuild.previousBuild.buildVariables.jiraIssue}"
-                // ToDo: Close jira issue
-            }
         }
         success {
-            script {
-                script { slack.sendBuildResult(slackChannel, startedBy, gitAuthorEmail, gitTag) }
-            }
+            echo "Build Successful"
         }
         failure {
             script { 
-                def jiraInfo = jiraGetServerInfo() // Retrieve Jira server info to get baseurl
-                jira.LogResult(jiraProject, gitAuthorEmail, startedBy, failedStage)
-                slack.sendBuildResult(slackChannel, startedBy, gitAuthorEmail, gitTag, failedStage, jiraInfo.data.baseUrl)
+                echo "Build failed"
+                // Create Jira?
+                // Send Slack?
             }
         }
         aborted {
             // This stage is triggered due to a non-error termination
             // e.g. timeout being exceeded, notifications to DevOps team go here
             echo 'aborted'
-            script { slack.sendBuildResult(slackChannel, startedBy, gitAuthorEmail, gitTag, failedStage, jiraInfo.data.baseUrl) }
         }
     }
 }
