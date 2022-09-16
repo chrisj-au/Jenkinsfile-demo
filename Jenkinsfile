@@ -1,8 +1,9 @@
 // This file is intented to show off various Declarative pipeline features.
 
-/* Sources: 
+/* Credits: 
 https://e.printstacktrace.blog/jenkins-pipeline-environment-variables-the-definitive-guide/
 https://e.printstacktrace.blog/how-to-catch-curl-response-in-jenkins-pipeline/
+https://gist.github.com/merikan/228cdb1893fca91f0663bab7b095757c
 
 
 
